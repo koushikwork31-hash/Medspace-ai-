@@ -13,6 +13,9 @@ import io
 import google.generativeai as genai
 from dotenv import load_dotenv
 import os
+from sklearn.feature_extraction.text import TfidfVectorizer
+from sklearn.metrics.pairwise import cosine_similarity
+from collections import deque
 
 print("Loading environment variables...")
 # Load environment variables
@@ -51,13 +54,30 @@ index = faiss.IndexFlatL2(embeddings.shape[1])
 index.add(embeddings)
 print("Embeddings generated and index created!")
 
+# Initialize TF-IDF vectorizer for keyword search
+print("Initializing TF-IDF vectorizer...")
+tfidf_vectorizer = TfidfVectorizer(stop_words='english')
+tfidf_matrix = tfidf_vectorizer.fit_transform(medicine_df["full_text"].tolist())
+print("TF-IDF initialized!")
+
+# Conversation memory (store last 5 messages)
+CONVERSATION_MEMORY_SIZE = 5
+conversation_memory = {}  # key: session id, value: deque of messages
+
+
 @app.route('/')
 def home():
     return render_template('index.html')
 
+
 @app.route('/chatbot')
 def chatbot():
+    # Initialize conversation memory for this session
+    session_id = request.remote_addr  # Simple session ID based on IP
+    if session_id not in conversation_memory:
+        conversation_memory[session_id] = deque(maxlen=CONVERSATION_MEMORY_SIZE)
     return render_template('chatbot.html')
+
 
 @app.route('/login', methods=['GET', 'POST'])
 def login():
@@ -72,45 +92,111 @@ def login():
             return render_template('login.html', error="Invalid credentials!")
     return render_template('login.html')
 
+
 @app.route('/logout')
 def logout():
     session.pop('logged_in', None)
     return redirect(url_for('home'))
 
-# Gemini general reply
-def get_general_reply_from_gemini(user_input):
-    try:
-        model = genai.GenerativeModel('gemini-pro')
-        response = model.generate_content(user_input)
-        return response.text.strip()
-    except Exception as e:
-        return "Hey there! 👋 Feel free to ask me anything about medicines."
 
-# Mistral RAG answer
-def smart_medicine_answer(user_query, k=3):
+def build_context_from_memory(session_id):
+    """Build context from conversation memory"""
+    memory = conversation_memory.get(session_id, deque(maxlen=CONVERSATION_MEMORY_SIZE))
+    context = []
+    for msg in memory:
+        role = "User" if msg['role'] == 'user' else "Assistant"
+        context.append(f"{role}: {msg['content']}")
+    return "\n".join(context)
+
+
+def hybrid_search(user_query, k=5, semantic_weight=0.7):
+    """Hybrid search combining semantic (FAISS) and keyword (TF-IDF) search"""
+    # Semantic search
     query_embedding = embed_model.encode([user_query])[0].astype("float32")
-    _, indices = index.search(np.array([query_embedding]), k)
-    relevant_rows = medicine_df.iloc[indices[0]]["full_text"].tolist()
+    distances, semantic_indices = index.search(np.array([query_embedding]), k)
+    semantic_scores = 1 / (1 + distances[0])  # Convert distance to similarity (0-1)
 
-    context = "\n\n".join(relevant_rows)
-    prompt = f"""
-You are a helpful AI medical assistant. Based on the following medicine information, answer the user's question.
+    # Keyword search
+    query_tfidf = tfidf_vectorizer.transform([user_query])
+    keyword_scores = cosine_similarity(query_tfidf, tfidf_matrix)[0]
+
+    # Combine scores
+    combined_scores = {}
+    for i, idx in enumerate(semantic_indices[0]):
+        combined_scores[idx] = semantic_weight * semantic_scores[i] + (1 - semantic_weight) * keyword_scores[idx]
+
+    # Add top keyword-only results for diversity
+    top_keyword_indices = keyword_scores.argsort()[::-1][:k]
+    for idx in top_keyword_indices:
+        if idx not in combined_scores:
+            combined_scores[idx] = keyword_scores[idx] * (1 - semantic_weight)
+
+    # Sort and return top k
+    sorted_indices = sorted(combined_scores.keys(), key=lambda x: combined_scores[x], reverse=True)[:k]
+    return medicine_df.iloc[sorted_indices]["full_text"].tolist()
+
+
+def build_rag_prompt(user_query, context, conversation_history):
+    """Build a structured prompt for RAG"""
+    prompt = f"""You are a helpful AI medical assistant for medispace.
+Use the following medicine information and conversation history to answer the user's question.
+
+Conversation History:
+{conversation_history}
 
 Medicine Data:
 {context}
 
 User Question: {user_query}
 
-Answer in simple, clear language:
+Answer in simple, clear language. If you don't know the answer, say so clearly.
 """
+    return prompt
+
+
+# Gemini general reply
+def get_general_reply_from_gemini(user_input, conversation_history):
     try:
-        response = ollama.chat(
-            model="mistral",
-            messages=[{"role": "user", "content": prompt}]
-        )
-        return response['message']['content']
+        model = genai.GenerativeModel('gemini-pro')
+        prompt = f"""You are a friendly AI medical assistant for medispace.
+Conversation History:
+{conversation_history}
+User: {user_input}
+Assistant:"""
+        response = model.generate_content(prompt)
+        return response.text.strip()
     except Exception as e:
+        print(f"Gemini error: {e}")
+        return "Hey there! 👋 Feel free to ask me anything about medicines."
+
+
+# RAG answer with Gemini or Ollama
+def smart_medicine_answer(user_query, session_id, k=5, use_ollama=False):
+    # Get conversation history
+    conversation_history = build_context_from_memory(session_id)
+
+    # Hybrid search
+    relevant_rows = hybrid_search(user_query, k)
+    context = "\n\n".join(relevant_rows)
+
+    # Build prompt
+    prompt = build_rag_prompt(user_query, context, conversation_history)
+
+    try:
+        if use_ollama:
+            response = ollama.chat(
+                model="mistral",
+                messages=[{"role": "user", "content": prompt}]
+            )
+            return response['message']['content']
+        else:
+            model = genai.GenerativeModel('gemini-pro')
+            response = model.generate_content(prompt)
+            return response.text.strip()
+    except Exception as e:
+        print(f"RAG error: {e}")
         return "I'm sorry, I couldn't generate a response right now. Please try again later."
+
 
 # Fuzzy medicine detail search
 def get_medicine_details(name_query):
@@ -127,13 +213,14 @@ def get_medicine_details(name_query):
     else:
         return "No matching medicine found."
 
+
 @app.route('/upload_image', methods=['GET', 'POST'])
 def upload_image():
     if request.method == 'POST':
         image = request.files.get('image')
         if not image:
             return render_template('upload_image.html', response=None, extracted="No image uploaded.")
-        
+
         try:
             img = Image.open(io.BytesIO(image.read()))
             extracted_text = pytesseract.image_to_string(img)
@@ -146,12 +233,13 @@ def upload_image():
 
                 if structured_data:
                     return render_template('upload_image.html', response=structured_data, extracted=formatted_text)
-            
+
             return render_template('upload_image.html', response=None, extracted=formatted_text)
         except Exception as e:
             return render_template('upload_image.html', response=None, extracted=f"Error processing image: {str(e)}")
 
     return render_template('upload_image.html', response=None)
+
 
 # Main message route with Gemini fallback
 @app.route('/send_message', methods=['POST'])
@@ -160,16 +248,30 @@ def send_message():
     if not user_message:
         return jsonify({'response': "Please enter a valid message."})
 
+    session_id = request.remote_addr  # Simple session ID
+
+    # Initialize conversation memory if needed
+    if session_id not in conversation_memory:
+        conversation_memory[session_id] = deque(maxlen=CONVERSATION_MEMORY_SIZE)
+
+    # Add user message to memory
+    conversation_memory[session_id].append({'role': 'user', 'content': user_message})
+
     # Handle greetings or general convo with Gemini
     GREETINGS = ['hi', 'hello', 'hey', 'how are you', 'hlo', 'hola', 'yo', 'sup', 'what’s up']
     user_message_lower = user_message.lower()
+    conversation_history = build_context_from_memory(session_id)
+
     if any(greet in user_message_lower for greet in GREETINGS):
-        reply = get_general_reply_from_gemini(user_message)
+        reply = get_general_reply_from_gemini(user_message, conversation_history)
+        conversation_memory[session_id].append({'role': 'assistant', 'content': reply})
         return jsonify({'response': reply})
 
-    # Default to RAG-based Mistral
-    reply = smart_medicine_answer(user_message)
+    # Default to RAG-based Gemini (set use_ollama=True if you want to use Ollama)
+    reply = smart_medicine_answer(user_message, session_id, use_ollama=False)
+    conversation_memory[session_id].append({'role': 'assistant', 'content': reply})
     return jsonify({'response': reply})
+
 
 if __name__ == '__main__':
     app.run(debug=True)

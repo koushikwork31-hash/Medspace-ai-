@@ -9,4 +9,5 @@ sentence-transformers
 faiss-cpu
 numpy
 ollama
+scikit-learn
 

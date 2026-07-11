@@ -1,0 +1,143 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Upload Prescription - medispace</title>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
+    <style>
+        body {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            padding-top: 2rem;
+        }
+        .upload-container {
+            max-width: 800px;
+            margin: 0 auto;
+            background: white;
+            padding: 2.5rem;
+            border-radius: 15px;
+            box-shadow: 0 10px 40px rgba(0,0,0,0.2);
+        }
+        .upload-container h2 {
+            color: #333;
+            margin-bottom: 1.5rem;
+            text-align: center;
+        }
+        .upload-area {
+            border: 3px dashed #667eea;
+            border-radius: 10px;
+            padding: 3rem;
+            text-align: center;
+            margin-bottom: 1.5rem;
+            cursor: pointer;
+            transition: background-color 0.3s;
+        }
+        .upload-area:hover {
+            background-color: #f0f4ff;
+        }
+        .upload-area i {
+            font-size: 3rem;
+            color: #667eea;
+            margin-bottom: 1rem;
+        }
+        .upload-area p {
+            color: #555;
+            font-size: 1.1rem;
+        }
+        .upload-btn {
+            width: 100%;
+            padding: 0.9rem;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            border: none;
+            border-radius: 8px;
+            font-size: 1rem;
+            font-weight: 600;
+            cursor: pointer;
+            transition: transform 0.2s;
+        }
+        .upload-btn:hover {
+            transform: translateY(-2px);
+        }
+        .extracted-text, .medicine-details {
+            margin-top: 2rem;
+            padding: 1.5rem;
+            background-color: #f8f9fa;
+            border-radius: 10px;
+        }
+        .extracted-text h3, .medicine-details h3 {
+            color: #667eea;
+            margin-bottom: 1rem;
+        }
+        .extracted-text pre, .medicine-details pre {
+            white-space: pre-wrap;
+            word-wrap: break-word;
+            color: #333;
+            line-height: 1.6;
+        }
+        .back-link {
+            display: block;
+            text-align: center;
+            margin-top: 1.5rem;
+            color: #667eea;
+            text-decoration: none;
+        }
+    </style>
+</head>
+<body>
+    <nav>
+        <label class="logo">medispace</label>
+        <ul>
+            <li><a href="{{ url_for('home') }}">Home</a></li>
+            <li><a href="{{ url_for('upload_image') }}">Upload Prescription</a></li>
+            <li><a href="{{ url_for('chatbot') }}">Chatbot</a></li>
+            <li><a href="{{ url_for('login') }}" class="login">Login</a></li>
+        </ul>
+        <label id="icon">
+            <i class="fas fa-bars"></i>
+        </label>
+    </nav>
+    <div class="upload-container">
+        <h2><i class="fas fa-file-medical"></i> Upload Your Prescription</h2>
+        <form method="POST" enctype="multipart/form-data">
+            <div class="upload-area">
+                <i class="fas fa-cloud-upload-alt"></i>
+                <p>Click to upload or drag and drop an image</p>
+                <input type="file" name="image" accept="image/*" required style="display: none;" id="file-input">
+            </div>
+            <button type="submit" class="upload-btn"><i class="fas fa-search"></i> Analyze Prescription</button>
+        </form>
+        
+        {% if extracted %}
+            <div class="extracted-text">
+                <h3><i class="fas fa-font"></i> Extracted Text:</h3>
+                <pre>{{ extracted }}</pre>
+            </div>
+        {% endif %}
+        
+        {% if response %}
+            <div class="medicine-details">
+                <h3><i class="fas fa-pills"></i> Medicine Details:</h3>
+                <pre>{{ response }}</pre>
+            </div>
+        {% endif %}
+        
+        <a href="{{ url_for('home') }}" class="back-link"><i class="fas fa-arrow-left"></i> Back to Home</a>
+    </div>
+    <script>
+        const uploadArea = document.querySelector('.upload-area');
+        const fileInput = document.getElementById('file-input');
+        
+        uploadArea.addEventListener('click', () => fileInput.click());
+        
+        fileInput.addEventListener('change', (e) => {
+            if (e.target.files.length > 0) {
+                uploadArea.querySelector('p').textContent = `Selected: ${e.target.files[0].name}`;
+            }
+        });
+    </script>
+    <script src="{{ url_for('static', filename='js/main.js') }}"></script>
+</body>
+</html>

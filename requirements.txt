@@ -1,0 +1,8 @@
+flask
+pandas
+rapidfuzz
+pytesseract
+pillow
+google-generativeai
+python-dotenv
+
